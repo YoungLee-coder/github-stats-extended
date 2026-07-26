@@ -68,7 +68,7 @@ export function setShouldMock(newShouldMock: boolean): void {
 
 const defaultAdapter = getAdapter(axios.defaults.adapter);
 
-// mock responses to "anuraghazra" requests
+// mock responses to demo user requests
 axios.defaults.adapter = async (config) => {
   if (!shouldMock) {
     return defaultAdapter(config);
