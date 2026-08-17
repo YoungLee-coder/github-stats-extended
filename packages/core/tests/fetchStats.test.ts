@@ -17,6 +17,9 @@ const data_stats = {
     user: {
       name: "Anurag Hazra",
       repositoriesContributedTo: { totalCount: 61 },
+      contributionsCollection: {
+        contributionYears: [2022, 2024],
+      },
       commits: {
         totalCommitContributions: 100,
       },
@@ -76,6 +79,13 @@ const data_repo = {
   },
 };
 
+const data_repo_page2 = structuredClone(data_repo);
+data_repo_page2.data.user.repositories.pageInfo.hasNextPage = true;
+// distinct from data_stats' cursor so the chaining assertion can see advancement
+data_repo_page2.data.user.repositories.pageInfo.endCursor = "cursor-2";
+const data_repo_page3 = structuredClone(data_repo_page2);
+data_repo_page3.data.user.repositories.pageInfo.endCursor = "cursor-3";
+
 const data_repo_zero_stars = {
   data: {
     user: {
@@ -97,6 +107,15 @@ const data_repo_zero_stars = {
   },
 };
 
+const data_contributions = {
+  data: {
+    user: {
+      year_2022: { contributionCalendar: { totalContributions: 150 } },
+      year_2024: { contributionCalendar: { totalContributions: 200 } },
+    },
+  },
+};
+
 const error = {
   errors: [
     {
@@ -111,7 +130,7 @@ const error = {
 const mock = new MockAdapter(axios);
 
 beforeEach(() => {
-  process.env["FETCH_MULTI_PAGE_STARS"] = "false"; // Set to `false` to fetch only one page of stars.
+  vi.stubEnv("FETCH_MULTI_PAGE_STARS", "false"); // Set to `false` to fetch only one page of stars.
   loadConfigFromEnv();
   mock.onPost("https://api.github.com/graphql").reply((cfg) => {
     const req = JSON.parse(cfg.data as string) as {
@@ -122,6 +141,9 @@ beforeEach(() => {
     if (req.variables?.startTime?.startsWith("2003")) {
       return [200, data_year2003];
     }
+    if (req.query.includes("contributionCalendar")) {
+      return [200, data_contributions];
+    }
     return [
       200,
       req.query.includes("totalCommitContributions") ? data_stats : data_repo,
@@ -131,6 +153,7 @@ beforeEach(() => {
 
 afterEach(() => {
   mock.reset();
+  vi.unstubAllEnvs();
 });
 
 describe("Test fetchStats", () => {
@@ -164,6 +187,7 @@ describe("Test fetchStats", () => {
       totalPRsReviewed: 0,
       totalIssuesAuthored: 0,
       totalIssuesCommented: 0,
+      totalContributions: 0,
       rank,
     });
   });
@@ -205,6 +229,7 @@ describe("Test fetchStats", () => {
       totalPRsReviewed: 0,
       totalIssuesAuthored: 0,
       totalIssuesCommented: 0,
+      totalContributions: 0,
       rank,
     });
   });
@@ -254,6 +279,7 @@ describe("Test fetchStats", () => {
       totalPRsReviewed: 0,
       totalIssuesAuthored: 0,
       totalIssuesCommented: 0,
+      totalContributions: 0,
       rank,
     });
   });
@@ -312,12 +338,13 @@ describe("Test fetchStats", () => {
       totalPRsReviewed: 0,
       totalIssuesAuthored: 0,
       totalIssuesCommented: 0,
+      totalContributions: 0,
       rank,
     });
   });
 
   it("should fetch two pages of stars if 'FETCH_MULTI_PAGE_STARS' env variable is set to `true`", async () => {
-    process.env["FETCH_MULTI_PAGE_STARS"] = "true";
+    vi.stubEnv("FETCH_MULTI_PAGE_STARS", "true");
     loadConfigFromEnv();
 
     const stats = await fetchStats("anuraghazra");
@@ -349,12 +376,13 @@ describe("Test fetchStats", () => {
       totalPRsReviewed: 0,
       totalIssuesAuthored: 0,
       totalIssuesCommented: 0,
+      totalContributions: 0,
       rank,
     });
   });
 
   it("should fetch one page of stars if 'FETCH_MULTI_PAGE_STARS' env variable is set to `false`", async () => {
-    process.env["FETCH_MULTI_PAGE_STARS"] = "false";
+    vi.stubEnv("FETCH_MULTI_PAGE_STARS", "false");
     loadConfigFromEnv();
 
     const stats = await fetchStats("anuraghazra");
@@ -386,12 +414,13 @@ describe("Test fetchStats", () => {
       totalPRsReviewed: 0,
       totalIssuesAuthored: 0,
       totalIssuesCommented: 0,
+      totalContributions: 0,
       rank,
     });
   });
 
   it("should fetch one page of stars if 'FETCH_MULTI_PAGE_STARS' env variable is not set", async () => {
-    process.env["FETCH_MULTI_PAGE_STARS"] = undefined;
+    vi.stubEnv("FETCH_MULTI_PAGE_STARS", undefined);
     loadConfigFromEnv();
 
     const stats = await fetchStats("anuraghazra");
@@ -423,8 +452,54 @@ describe("Test fetchStats", () => {
       totalPRsReviewed: 0,
       totalIssuesAuthored: 0,
       totalIssuesCommented: 0,
+      totalContributions: 0,
       rank,
     });
+  });
+
+  it("should fetch at most 'FETCH_MULTI_PAGE_STARS' pages when it is a number", async () => {
+    vi.stubEnv("FETCH_MULTI_PAGE_STARS", "3");
+    loadConfigFromEnv();
+    mock.reset();
+    mock
+      .onPost("https://api.github.com/graphql")
+      .replyOnce(200, data_stats)
+      .onPost("https://api.github.com/graphql")
+      .replyOnce(200, data_repo_page2)
+      .onPost("https://api.github.com/graphql")
+      .replyOnce(200, data_repo_page3)
+      // a fourth page is available but must not be requested
+      .onPost("https://api.github.com/graphql")
+      .replyOnce(200, data_repo);
+
+    const stats = await fetchStats("anuraghazra");
+
+    // the stats page plus two repo pages, even though every page has a next one
+    expect(mock.history.post).toHaveLength(3);
+    expect(stats.totalStars).toBe(500);
+    // each page is requested with the cursor the previous one returned
+    const cursors = mock.history.post.map(
+      (req) =>
+        (JSON.parse(req.data as string) as { variables: { after: unknown } })
+          .variables.after,
+    );
+    expect(cursors).toStrictEqual([null, "cursor", "cursor-2"]);
+  });
+
+  it("should throw when a page after the first returns an error", async () => {
+    vi.stubEnv("FETCH_MULTI_PAGE_STARS", "true");
+    loadConfigFromEnv();
+    mock.reset();
+    mock
+      .onPost("https://api.github.com/graphql")
+      .replyOnce(200, data_stats)
+      .onPost("https://api.github.com/graphql")
+      .replyOnce(200, error);
+
+    await expect(fetchStats("anuraghazra")).rejects.toThrow(
+      "Could not resolve to a User with the login of 'noname'.",
+    );
+    expect(mock.history.post).toHaveLength(2);
   });
 
   it("should not fetch additional stats data when it not requested", async () => {
@@ -457,6 +532,7 @@ describe("Test fetchStats", () => {
       totalPRsReviewed: 0,
       totalIssuesAuthored: 0,
       totalIssuesCommented: 0,
+      totalContributions: 0,
       rank,
     });
   });
@@ -491,6 +567,7 @@ describe("Test fetchStats", () => {
       totalPRsReviewed: 0,
       totalIssuesAuthored: 0,
       totalIssuesCommented: 0,
+      totalContributions: 0,
       rank,
     });
   });
@@ -534,8 +611,108 @@ describe("Test fetchStats", () => {
       totalPRsAuthored: 0,
       totalPRsCommented: 0,
       totalPRsReviewed: 0,
+      totalContributions: 0,
       rank,
     });
+  });
+
+  it("should fetch total contributions when include_contributions is true", async () => {
+    const stats = await fetchStats(
+      "anuraghazra",
+      false,
+      [],
+      false,
+      false,
+      false,
+      undefined,
+      [],
+      [],
+      false,
+      false,
+      false,
+      false,
+      false,
+      [],
+      true, // include_contributions
+    );
+
+    expect(stats.totalContributions).toBe(350);
+  });
+
+  it("should throw when the contributions query returns an error", async () => {
+    mock.onPost("https://api.github.com/graphql").reply((cfg) => {
+      const req = JSON.parse(cfg.data as string) as { query: string };
+      if (req.query.includes("contributionCalendar")) {
+        return [
+          200,
+          {
+            data: null,
+            errors: [{ message: "Some test GraphQL error" }],
+          },
+        ];
+      }
+      return [
+        200,
+        req.query.includes("totalCommitContributions") ? data_stats : data_repo,
+      ];
+    });
+
+    await expect(
+      fetchStats(
+        "anuraghazra",
+        false,
+        [],
+        false,
+        false,
+        false,
+        undefined,
+        [],
+        [],
+        false,
+        false,
+        false,
+        false,
+        false,
+        [],
+        true, // include_contributions
+      ),
+    ).rejects.toThrow("Some test GraphQL error");
+  });
+
+  it("should throw a generic error when the contributions query returns an error without a message", async () => {
+    mock.onPost("https://api.github.com/graphql").reply((cfg) => {
+      const req = JSON.parse(cfg.data as string) as { query: string };
+      if (req.query.includes("contributionCalendar")) {
+        return [200, { data: null, errors: [{ type: "SOME_ERROR" }] }];
+      }
+      return [
+        200,
+        req.query.includes("totalCommitContributions") ? data_stats : data_repo,
+      ];
+    });
+
+    await expect(
+      fetchStats(
+        "anuraghazra",
+        false,
+        [],
+        false,
+        false,
+        false,
+        undefined,
+        [],
+        [],
+        false,
+        false,
+        false,
+        false,
+        false,
+        [],
+        true, // include_contributions
+      ),
+    ).rejects.toThrow(
+      "Something went wrong while trying to retrieve the contributions data using the GraphQL API.",
+    );
   });
 
   it("should return correct data when user don't have any pull requests", async () => {
@@ -571,6 +748,7 @@ describe("Test fetchStats", () => {
       totalPRsAuthored: 0,
       totalPRsCommented: 0,
       totalPRsReviewed: 0,
+      totalContributions: 0,
       rank,
     });
   });
